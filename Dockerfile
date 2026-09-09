@@ -4,10 +4,13 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 RUN dpkg --add-architecture i386
 
-# Disable the release date check to bypass expired repository metadata errors
-RUN echo "Acquire::Check-Valid-Until \"false\";" > /etc/apt/apt.conf.d/99no-check-valid-until
+# ১. সরাসরি মেটাডেটা চেক বন্ধ করার কনফিগারেশন তৈরি (Double-layer fix)
+RUN echo "Acquire::Check-Valid-Until \"false\";" > /etc/apt/apt.conf.d/99no-check-valid-until \
+    && echo "Acquire::Check-Date \"false\";" >> /etc/apt/apt.conf.d/99no-check-valid-until
 
-RUN apt update && apt install -y \
+# ২. রেলওয়ের বিল্ড ইঞ্জিনের জন্য আপডেট কমান্ডের ভেতরেই সরাসরি ফ্ল্যাগ পাস করা হলো
+RUN apt-get update -o Acquire::Check-Valid-Until=false -o Acquire::Check-Date=false && \
+    apt-get install -y --no-install-recommends \
     xrdp \
     xfce4 \
     xfce4-goodies \
@@ -24,4 +27,4 @@ RUN apt update && apt install -y \
     wine \
     wine32 \
     firefox-esr && \
-    apt clean && rm -rf /var/lib/apt/lists/
+    apt-get clean && rm -rf /var/lib/apt/lists/*
