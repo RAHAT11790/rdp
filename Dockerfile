@@ -2,13 +2,15 @@ FROM debian:bullseye
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+# 1. Enable 32-bit architecture for Wine
 RUN dpkg --add-architecture i386
 
-# ১. সরাসরি মেটাডেটা চেক বন্ধ করার কনফিগারেশন তৈরি (Double-layer fix)
-RUN echo "Acquire::Check-Valid-Until \"false\";" > /etc/apt/apt.conf.d/99no-check-valid-until \
-    && echo "Acquire::Check-Date \"false\";" >> /etc/apt/apt.conf.d/99no-check-valid-until
+# 2. Force repositories to use the static archive mirrors to bypass expiration errors
+RUN sed -i 's/deb.debian.org/archive.debian.org/g' /etc/apt/sources.list && \
+    sed -i 's/security.debian.org/archive.debian.org/g' /etc/apt/sources.list && \
+    sed -i '/debian-security/d' /etc/apt/sources.list
 
-# ২. রেলওয়ের বিল্ড ইঞ্জিনের জন্য আপডেট কমান্ডের ভেতরেই সরাসরি ফ্ল্যাগ পাস করা হলো
+# 3. Update and install packages cleanly using apt-get with bypass flags
 RUN apt-get update -o Acquire::Check-Valid-Until=false -o Acquire::Check-Date=false && \
     apt-get install -y --no-install-recommends \
     xrdp \
