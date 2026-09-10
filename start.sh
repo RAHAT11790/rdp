@@ -10,41 +10,35 @@ echo "[1/6] Preparing DBus..."
 
 mkdir -p /var/run/dbus
 mkdir -p /tmp/.X11-unix
-
 chmod 1777 /tmp/.X11-unix
 
-if [ ! -f /etc/machine-id ]; then
-    dbus-uuidgen --ensure=/etc/machine-id
-fi
-
+dbus-uuidgen --ensure=/etc/machine-id
 ln -sf /etc/machine-id /var/lib/dbus/machine-id
 
-service dbus start || true
+service dbus start 2>/dev/null || true
 
 echo "✓ DBus ready"
 
-echo "[2/6] Checking XRDP TLS certificate..."
+echo "[2/6] Checking XRDP TLS..."
 
-if [ ! -s /etc/xrdp/cert.pem ]; then
-    echo "ERROR: XRDP certificate missing"
-    exit 1
-fi
-
-if [ ! -s /etc/xrdp/key.pem ]; then
-    echo "ERROR: XRDP private key missing"
-    exit 1
-fi
+test -s /etc/xrdp/cert.pem
+test -s /etc/xrdp/key.pem
 
 echo "✓ TLS certificate found"
 echo "✓ TLS private key found"
 
 echo "[3/6] Checking XRDP configuration..."
 
-grep -E '^(port|security_layer)=' /etc/xrdp/xrdp.ini || true
+echo "Port:"
+grep -E '^port=' /etc/xrdp/xrdp.ini
+
+echo "Security:"
+grep -E '^security_layer=' /etc/xrdp/xrdp.ini
 
 echo "[4/6] Preparing PulseAudio..."
 
-pulseaudio --system \
+pulseaudio \
+    --system \
     --disallow-exit \
     --disable-shm \
     --daemonize=yes \
@@ -54,21 +48,34 @@ echo "✓ PulseAudio ready"
 
 echo "[5/6] Starting XRDP..."
 
-service xrdp stop 2>/dev/null || true
-service xrdp-sesman stop 2>/dev/null || true
+# Kill old processes if any
+pkill -x xrdp 2>/dev/null || true
+pkill -x xrdp-sesman 2>/dev/null || true
 
-service xrdp-sesman start
-service xrdp start
+sleep 1
+
+# Start XRDP session manager directly.
+# Do NOT use: service xrdp-sesman
+/usr/sbin/xrdp-sesman &
 
 sleep 2
 
-echo "[6/6] XRDP status..."
+# Start XRDP directly.
+/usr/sbin/xrdp --nodaemon &
+XRDP_PID=$!
 
-if pgrep -x xrdp >/dev/null; then
+sleep 3
+
+echo "[6/6] Checking XRDP..."
+
+if kill -0 "$XRDP_PID" 2>/dev/null; then
     echo "✓ xrdp is running"
 else
     echo "ERROR: xrdp failed to start"
+    echo "========== XRDP LOG =========="
     cat /var/log/xrdp.log 2>/dev/null || true
+    echo "======= XRDP SESMAN LOG ======="
+    cat /var/log/xrdp-sesman.log 2>/dev/null || true
     exit 1
 fi
 
@@ -77,6 +84,14 @@ if pgrep -x xrdp-sesman >/dev/null; then
 else
     echo "ERROR: xrdp-sesman failed to start"
     cat /var/log/xrdp-sesman.log 2>/dev/null || true
+    exit 1
+fi
+
+if ss -lntp 2>/dev/null | grep -q ':3389'; then
+    echo "✓ Port 3389 is listening"
+else
+    echo "ERROR: Port 3389 is NOT listening"
+    cat /var/log/xrdp.log 2>/dev/null || true
     exit 1
 fi
 
@@ -89,8 +104,13 @@ echo "Username : root"
 echo "Password : root"
 echo "Security : TLS"
 echo "Python   : $(python --version)"
+echo "Listen   : 0.0.0.0:3389"
 echo "=========================================="
 echo "Waiting for RDP connections..."
 echo "=========================================="
 
-tail -F /var/log/xrdp.log /var/log/xrdp-sesman.log
+# Keep container alive and show logs
+tail -F /var/log/xrdp.log /var/log/xrdp-sesman.log &
+TAIL_PID=$!
+
+wait "$XRDP_PID"
