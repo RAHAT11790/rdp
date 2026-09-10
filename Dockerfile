@@ -7,26 +7,23 @@ ENV LC_ALL=C.UTF-8
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
-# =========================================================
+# --------------------------------------------------
 # Enable 32-bit architecture for Wine
-# =========================================================
-
+# --------------------------------------------------
 RUN dpkg --add-architecture i386
 
-# =========================================================
+# --------------------------------------------------
 # Debian repositories
-# =========================================================
-
+# --------------------------------------------------
 RUN printf '%s\n' \
-    "deb http://deb.debian.org/debian bookworm main contrib non-free non-free-firmware" \
-    "deb http://deb.debian.org/debian bookworm-updates main contrib non-free non-free-firmware" \
-    "deb http://security.debian.org/debian-security bookworm-security main contrib non-free non-free-firmware" \
+    'deb http://deb.debian.org/debian bookworm main contrib non-free non-free-firmware' \
+    'deb http://deb.debian.org/debian bookworm-updates main contrib non-free non-free-firmware' \
+    'deb http://deb.debian.org/debian-security bookworm-security main contrib non-free non-free-firmware' \
     > /etc/apt/sources.list
 
-# =========================================================
+# --------------------------------------------------
 # System packages
-# =========================================================
-
+# --------------------------------------------------
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         xrdp \
@@ -34,8 +31,9 @@ RUN apt-get update && \
         xorg \
         xfce4 \
         xfce4-goodies \
-        dbus-x11 \
         dbus \
+        dbus-x11 \
+        dbus-user-session \
         policykit-1 \
         sudo \
         curl \
@@ -51,18 +49,13 @@ RUN apt-get update && \
         procps \
         psmisc \
         lsof \
-        \
         pulseaudio \
         pulseaudio-utils \
-        \
         wine \
         wine32 \
-        \
         firefox-esr \
-        \
         fonts-liberation \
         fonts-dejavu \
-        \
         libx11-6 \
         libxext6 \
         libxrender1 \
@@ -74,106 +67,93 @@ RUN apt-get update && \
         libglib2.0-0 \
         libnss3 \
         libasound2 \
-        && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
-# =========================================================
-# Make sure Python 3.13 is the default
-# =========================================================
-
+# --------------------------------------------------
+# Verify Python
+# --------------------------------------------------
 RUN python --version && \
     python3 --version && \
     python -m pip --version
 
-# =========================================================
-# Upgrade pip
-# =========================================================
+# Update pip tools
+RUN python -m pip install --no-cache-dir \
+    --upgrade pip setuptools wheel
 
-RUN python -m pip install --no-cache-dir --upgrade pip setuptools wheel
-
-# =========================================================
-# XRDP user/group configuration
-# =========================================================
-
-RUN adduser xrdp ssl-cert || true
-
-# =========================================================
-# X11 configuration
-# =========================================================
-
+# --------------------------------------------------
+# XRDP configuration
+# --------------------------------------------------
 RUN mkdir -p /etc/X11 && \
     printf '%s\n' \
         'allowed_users=anybody' \
         'needs_root_rights=yes' \
         > /etc/X11/Xwrapper.config
 
-# =========================================================
-# XRDP configuration
-# =========================================================
-
-RUN sed -i 's/^port=.*/port=3389/' /etc/xrdp/xrdp.ini && \
-    sed -i 's/^security_layer=.*/security_layer=rdp/' /etc/xrdp/xrdp.ini && \
-    sed -i 's/^crypt_level=.*/crypt_level=low/' /etc/xrdp/xrdp.ini
-
-# =========================================================
-# XFCE session
-# =========================================================
-
+# --------------------------------------------------
+# XFCE session for XRDP
+# --------------------------------------------------
 RUN printf '%s\n' \
     '#!/bin/sh' \
-    'unset DBUS_SESSION_BUS_ADDRESS' \
-    'unset XDG_RUNTIME_DIR' \
-    'exec startxfce4' \
+    'if test -r /etc/profile; then' \
+    '    . /etc/profile' \
+    'fi' \
+    'if test -r "$HOME/.profile"; then' \
+    '    . "$HOME/.profile"' \
+    'fi' \
+    'export XDG_CURRENT_DESKTOP=XFCE' \
+    'export XDG_SESSION_DESKTOP=xfce' \
+    'export XDG_CONFIG_DIRS=/etc/xdg/xdg-xfce:/etc/xdg' \
+    'export XDG_DATA_DIRS=/usr/share/xfce4:/usr/local/share:/usr/share' \
+    'startxfce4' \
     > /etc/xrdp/startwm.sh && \
     chmod +x /etc/xrdp/startwm.sh
 
+# --------------------------------------------------
+# Root XFCE session
+# --------------------------------------------------
 RUN printf '%s\n' \
+    '#!/bin/sh' \
+    'export XDG_CURRENT_DESKTOP=XFCE' \
+    'export XDG_SESSION_DESKTOP=xfce' \
     'startxfce4' \
     > /root/.xsession && \
     chmod +x /root/.xsession
 
-# =========================================================
-# DBus machine ID
-# =========================================================
+# --------------------------------------------------
+# XRDP security/config
+# --------------------------------------------------
+RUN sed -i 's/^security_layer=.*/security_layer=negotiate/' /etc/xrdp/xrdp.ini && \
+    sed -i 's/^crypt_level=.*/crypt_level=high/' /etc/xrdp/xrdp.ini
 
-RUN mkdir -p /run/dbus && \
-    dbus-uuidgen --ensure=/etc/machine-id && \
-    ln -sf /etc/machine-id /var/lib/dbus/machine-id
+# --------------------------------------------------
+# D-Bus machine ID
+# --------------------------------------------------
+RUN dbus-uuidgen --ensure=/etc/machine-id
 
-# =========================================================
+# --------------------------------------------------
 # Root password
-# =========================================================
-
+# --------------------------------------------------
 RUN echo 'root:root' | chpasswd
 
-# =========================================================
-# Optional application requirements
-# =========================================================
+# --------------------------------------------------
+# Working directory
+# --------------------------------------------------
+WORKDIR /root
 
-COPY requirements.txt /tmp/requirements.txt
-
-RUN if [ -s /tmp/requirements.txt ]; then \
-        python -m pip install --no-cache-dir -r /tmp/requirements.txt; \
-    fi && \
-    rm -f /tmp/requirements.txt
-
-# =========================================================
+# --------------------------------------------------
 # Startup script
-# =========================================================
-
+# --------------------------------------------------
 COPY start.sh /start.sh
 
 RUN chmod +x /start.sh
 
-# =========================================================
-# Railway TCP Proxy
-# =========================================================
-
+# --------------------------------------------------
+# Railway TCP Proxy / XRDP port
+# --------------------------------------------------
 EXPOSE 3389
 
-# =========================================================
+# --------------------------------------------------
 # Start
-# =========================================================
-
+# --------------------------------------------------
 CMD ["/start.sh"]
