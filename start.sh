@@ -2,100 +2,95 @@
 
 set -e
 
-echo "========================================"
-echo "        Debian XFCE XRDP Server"
-echo "========================================"
-echo
+echo "=========================================="
+echo "       RS ANIME XRDP SERVER"
+echo "=========================================="
 
-# Runtime directories
-mkdir -p /run/dbus
+echo "[1/6] Preparing DBus..."
+
 mkdir -p /var/run/dbus
 mkdir -p /tmp/.X11-unix
 
 chmod 1777 /tmp/.X11-unix
 
-# Ensure DBus machine ID exists
-if [ ! -s /var/lib/dbus/machine-id ]; then
-    dbus-uuidgen --ensure=/var/lib/dbus/machine-id
+if [ ! -f /etc/machine-id ]; then
+    dbus-uuidgen --ensure=/etc/machine-id
 fi
 
-echo "[1/5] Starting DBus..."
+ln -sf /etc/machine-id /var/lib/dbus/machine-id
 
-if pgrep -x dbus-daemon >/dev/null 2>&1; then
-    echo "DBus is already running."
-else
-    dbus-daemon --system --fork
+service dbus start || true
+
+echo "✓ DBus ready"
+
+echo "[2/6] Checking XRDP TLS certificate..."
+
+if [ ! -s /etc/xrdp/cert.pem ]; then
+    echo "ERROR: XRDP certificate missing"
+    exit 1
 fi
 
-echo "[2/5] Preparing PulseAudio..."
-
-mkdir -p /run/pulse
-chmod 777 /run/pulse
-
-# Start system PulseAudio if available
-if command -v pulseaudio >/dev/null 2>&1; then
-    pulseaudio \
-        --system \
-        --disallow-exit \
-        --disable-shm \
-        --daemonize=yes \
-        --exit-idle-time=-1 \
-        >/tmp/pulseaudio.log 2>&1 || true
+if [ ! -s /etc/xrdp/key.pem ]; then
+    echo "ERROR: XRDP private key missing"
+    exit 1
 fi
 
-echo "[3/5] Preparing XRDP..."
+echo "✓ TLS certificate found"
+echo "✓ TLS private key found"
 
-# Remove stale PID files
-rm -f /run/xrdp/xrdp.pid
-rm -f /run/xrdp/xrdp-sesman.pid
+echo "[3/6] Checking XRDP configuration..."
 
-mkdir -p /run/xrdp
-chown xrdp:xrdp /run/xrdp || true
+grep -E '^(port|security_layer)=' /etc/xrdp/xrdp.ini || true
 
-echo "[4/5] Starting XRDP..."
+echo "[4/6] Preparing PulseAudio..."
 
-# Start xrdp using Debian's init script
+pulseaudio --system \
+    --disallow-exit \
+    --disable-shm \
+    --daemonize=yes \
+    2>/dev/null || true
+
+echo "✓ PulseAudio ready"
+
+echo "[5/6] Starting XRDP..."
+
+service xrdp stop 2>/dev/null || true
+service xrdp-sesman stop 2>/dev/null || true
+
+service xrdp-sesman start
 service xrdp start
 
 sleep 2
 
-echo "[5/5] XRDP status:"
-echo
+echo "[6/6] XRDP status..."
 
-if pgrep -x xrdp >/dev/null 2>&1; then
+if pgrep -x xrdp >/dev/null; then
     echo "✓ xrdp is running"
 else
-    echo "✗ xrdp failed to start"
-    echo
+    echo "ERROR: xrdp failed to start"
     cat /var/log/xrdp.log 2>/dev/null || true
     exit 1
 fi
 
-if pgrep -x xrdp-sesman >/dev/null 2>&1; then
+if pgrep -x xrdp-sesman >/dev/null; then
     echo "✓ xrdp-sesman is running"
 else
-    echo "✗ xrdp-sesman failed to start"
-    echo
+    echo "ERROR: xrdp-sesman failed to start"
     cat /var/log/xrdp-sesman.log 2>/dev/null || true
     exit 1
 fi
 
-echo
-echo "========================================"
-echo "       XRDP SERVER IS READY"
-echo "========================================"
-echo
+echo ""
+echo "=========================================="
+echo "       XRDP SERVER READY"
+echo "=========================================="
 echo "RDP Port : 3389"
 echo "Username : root"
 echo "Password : root"
-echo
+echo "Security : TLS"
+echo "Python   : $(python --version)"
+echo "=========================================="
 echo "Waiting for RDP connections..."
-echo
+echo "=========================================="
 
-# Keep container alive and show XRDP logs
-touch /var/log/xrdp.log
-touch /var/log/xrdp-sesman.log
-
-tail -F \
-    /var/log/xrdp.log \
-    /var/log/xrdp-sesman.log
+tail -F /var/log/xrdp.log /var/log/xrdp-sesman.log
