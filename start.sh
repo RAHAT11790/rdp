@@ -2,87 +2,100 @@
 
 set -e
 
-echo "=========================================="
-echo "        Railway Debian XRDP Server"
-echo "=========================================="
+echo "========================================"
+echo "        Debian XFCE XRDP Server"
+echo "========================================"
+echo
 
-echo ""
-echo "Python:"
-python --version
-python3 --version
-python -m pip --version
-
-echo ""
-echo "Checking XRDP:"
-command -v xrdp
-command -v xrdp-sesman
-
-echo ""
-echo "Checking XFCE:"
-command -v startxfce4
-
-# --------------------------------------------------
 # Runtime directories
-# --------------------------------------------------
-
 mkdir -p /run/dbus
+mkdir -p /var/run/dbus
+mkdir -p /tmp/.X11-unix
+
+chmod 1777 /tmp/.X11-unix
+
+# Ensure DBus machine ID exists
+if [ ! -s /var/lib/dbus/machine-id ]; then
+    dbus-uuidgen --ensure=/var/lib/dbus/machine-id
+fi
+
+echo "[1/5] Starting DBus..."
+
+if pgrep -x dbus-daemon >/dev/null 2>&1; then
+    echo "DBus is already running."
+else
+    dbus-daemon --system --fork
+fi
+
+echo "[2/5] Preparing PulseAudio..."
+
+mkdir -p /run/pulse
+chmod 777 /run/pulse
+
+# Start system PulseAudio if available
+if command -v pulseaudio >/dev/null 2>&1; then
+    pulseaudio \
+        --system \
+        --disallow-exit \
+        --disable-shm \
+        --daemonize=yes \
+        --exit-idle-time=-1 \
+        >/tmp/pulseaudio.log 2>&1 || true
+fi
+
+echo "[3/5] Preparing XRDP..."
+
+# Remove stale PID files
+rm -f /run/xrdp/xrdp.pid
+rm -f /run/xrdp/xrdp-sesman.pid
+
 mkdir -p /run/xrdp
-mkdir -p /var/log/xrdp
+chown xrdp:xrdp /run/xrdp || true
 
-# --------------------------------------------------
-# D-Bus
-# --------------------------------------------------
+echo "[4/5] Starting XRDP..."
 
-dbus-uuidgen --ensure=/etc/machine-id
-
-dbus-daemon --system --fork || true
-
-# --------------------------------------------------
-# Runtime user directory
-# --------------------------------------------------
-
-mkdir -p /run/user/0
-chmod 700 /run/user/0
-
-export XDG_RUNTIME_DIR=/run/user/0
-
-# --------------------------------------------------
-# PulseAudio
-# --------------------------------------------------
-
-pulseaudio \
-    --system \
-    --disallow-exit \
-    --disable-shm \
-    --exit-idle-time=-1 \
-    >/tmp/pulseaudio.log 2>&1 || true
-
-# --------------------------------------------------
-# XRDP permissions
-# --------------------------------------------------
-
-chown xrdp:xrdp /run/xrdp 2>/dev/null || true
-
-# --------------------------------------------------
-# Start XRDP session manager
-# --------------------------------------------------
-
-echo ""
-echo "Starting xrdp-sesman..."
-
-/usr/sbin/xrdp-sesman &
+# Start xrdp using Debian's init script
+service xrdp start
 
 sleep 2
 
-# --------------------------------------------------
-# Start XRDP in foreground
-# --------------------------------------------------
+echo "[5/5] XRDP status:"
+echo
 
-echo ""
-echo "=========================================="
-echo " XRDP SERVER STARTING"
-echo " Internal Port: 3389"
-echo "=========================================="
-echo ""
+if pgrep -x xrdp >/dev/null 2>&1; then
+    echo "✓ xrdp is running"
+else
+    echo "✗ xrdp failed to start"
+    echo
+    cat /var/log/xrdp.log 2>/dev/null || true
+    exit 1
+fi
 
-exec /usr/sbin/xrdp --nodaemon
+if pgrep -x xrdp-sesman >/dev/null 2>&1; then
+    echo "✓ xrdp-sesman is running"
+else
+    echo "✗ xrdp-sesman failed to start"
+    echo
+    cat /var/log/xrdp-sesman.log 2>/dev/null || true
+    exit 1
+fi
+
+echo
+echo "========================================"
+echo "       XRDP SERVER IS READY"
+echo "========================================"
+echo
+echo "RDP Port : 3389"
+echo "Username : root"
+echo "Password : root"
+echo
+echo "Waiting for RDP connections..."
+echo
+
+# Keep container alive and show XRDP logs
+touch /var/log/xrdp.log
+touch /var/log/xrdp-sesman.log
+
+tail -F \
+    /var/log/xrdp.log \
+    /var/log/xrdp-sesman.log
