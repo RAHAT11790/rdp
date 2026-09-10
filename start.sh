@@ -5,54 +5,60 @@ set -u
 echo "=============================================="
 echo "        RS ANIME XRDP CONTAINER"
 echo "=============================================="
-echo ""
 
 # --------------------------------------------------
-# Basic directories
+# Runtime directories
 # --------------------------------------------------
+
 mkdir -p /run/dbus
 mkdir -p /var/run/dbus
+mkdir -p /var/run/xrdp
 mkdir -p /tmp/.X11-unix
 
 chmod 1777 /tmp/.X11-unix
 
 # --------------------------------------------------
+# Remove stale XRDP PID files
+# --------------------------------------------------
+
+rm -f /var/run/xrdp/xrdp-sesman.pid
+rm -f /var/run/xrdp/xrdp.pid
+
+# --------------------------------------------------
 # Machine ID
 # --------------------------------------------------
+
 dbus-uuidgen --ensure=/etc/machine-id
 ln -sf /etc/machine-id /var/lib/dbus/machine-id
 
 # --------------------------------------------------
-# Clean old XRDP processes
+# Make sure no old XRDP process exists
 # --------------------------------------------------
-pkill -x xrdp 2>/dev/null || true
-pkill -x xrdp-sesman 2>/dev/null || true
+
+pkill -9 -x xrdp 2>/dev/null || true
+pkill -9 -x xrdp-sesman 2>/dev/null || true
 
 sleep 1
 
 # --------------------------------------------------
-# Check certificate
+# TLS verification
 # --------------------------------------------------
-echo "[1/7] Checking TLS certificate..."
 
-if [ ! -s /etc/xrdp/cert.pem ]; then
-    echo "ERROR: XRDP certificate missing"
-    exit 1
-fi
-
-if [ ! -s /etc/xrdp/key.pem ]; then
-    echo "ERROR: XRDP private key missing"
-    exit 1
-fi
-
-echo "      TLS certificate: OK"
-echo "      TLS private key: OK"
-
-# --------------------------------------------------
-# Check configuration
-# --------------------------------------------------
 echo ""
-echo "[2/7] Checking XRDP configuration..."
+echo "[1/6] Checking TLS..."
+
+test -s /etc/xrdp/cert.pem
+test -s /etc/xrdp/key.pem
+
+echo "      Certificate : OK"
+echo "      Private key : OK"
+
+# --------------------------------------------------
+# XRDP configuration
+# --------------------------------------------------
+
+echo ""
+echo "[2/6] Checking XRDP..."
 
 echo "      Port:"
 grep -E '^[[:space:]]*port=' /etc/xrdp/xrdp.ini || true
@@ -64,22 +70,22 @@ echo "      Root login:"
 grep -E '^[[:space:]]*AllowRootLogin=' /etc/xrdp/sesman.ini || true
 
 # --------------------------------------------------
-# Start DBus
+# DBus
 # --------------------------------------------------
+
 echo ""
-echo "[3/7] Starting DBus..."
+echo "[3/6] Starting DBus..."
 
-if command -v dbus-daemon >/dev/null 2>&1; then
-    dbus-daemon --system --fork 2>/dev/null || true
-fi
+dbus-daemon --system --fork 2>/dev/null || true
 
-echo "      DBus: ready"
+echo "      DBus : OK"
 
 # --------------------------------------------------
 # PulseAudio
 # --------------------------------------------------
+
 echo ""
-echo "[4/7] Preparing audio..."
+echo "[4/6] Preparing PulseAudio..."
 
 pulseaudio \
     --system \
@@ -88,38 +94,53 @@ pulseaudio \
     --daemonize=yes \
     >/tmp/pulseaudio.log 2>&1 || true
 
-echo "      PulseAudio: ready"
+echo "      PulseAudio : OK"
 
 # --------------------------------------------------
-# Start XRDP session manager
+# XRDP SESMAN
+#
 # IMPORTANT:
-# Do NOT use "service xrdp-sesman".
-# Docker does not run systemd.
+# --nodaemon keeps sesman attached to this process.
+# This avoids the PID/daemonization problem.
 # --------------------------------------------------
+
 echo ""
-echo "[5/7] Starting XRDP session manager..."
+echo "[5/6] Starting XRDP session manager..."
 
 /usr/sbin/xrdp-sesman \
+    --nodaemon \
     >/var/log/xrdp-sesman-console.log 2>&1 &
 
 SESMAN_PID=$!
 
 sleep 2
 
-if kill -0 "$SESMAN_PID" 2>/dev/null; then
-    echo "      xrdp-sesman: running"
-else
-    echo "ERROR: xrdp-sesman failed"
+if ! kill -0 "$SESMAN_PID" 2>/dev/null; then
+
+    echo ""
+    echo "=============================================="
+    echo "ERROR: xrdp-sesman FAILED"
+    echo "=============================================="
+
+    echo ""
+    echo "----- SESMAN CONSOLE -----"
     cat /var/log/xrdp-sesman-console.log 2>/dev/null || true
+
+    echo ""
+    echo "----- SESMAN LOG -----"
     cat /var/log/xrdp-sesman.log 2>/dev/null || true
+
     exit 1
 fi
 
+echo "      xrdp-sesman : RUNNING"
+
 # --------------------------------------------------
-# Start XRDP
+# XRDP
 # --------------------------------------------------
+
 echo ""
-echo "[6/7] Starting XRDP..."
+echo "[6/6] Starting XRDP..."
 
 /usr/sbin/xrdp \
     --nodaemon \
@@ -131,35 +152,41 @@ sleep 3
 
 if ! kill -0 "$XRDP_PID" 2>/dev/null; then
 
-    echo "ERROR: XRDP failed to start"
+    echo ""
+    echo "=============================================="
+    echo "ERROR: xrdp FAILED"
+    echo "=============================================="
 
     echo ""
-    echo "========== XRDP CONSOLE =========="
+    echo "----- XRDP CONSOLE -----"
     cat /var/log/xrdp-console.log 2>/dev/null || true
 
     echo ""
-    echo "========== XRDP LOG =========="
+    echo "----- XRDP LOG -----"
     cat /var/log/xrdp.log 2>/dev/null || true
 
     echo ""
-    echo "========== SESMAN LOG =========="
+    echo "----- SESMAN LOG -----"
     cat /var/log/xrdp-sesman.log 2>/dev/null || true
 
     exit 1
 fi
 
-# --------------------------------------------------
-# Verify listening port
-# --------------------------------------------------
-echo ""
-echo "[7/7] Verifying port 3389..."
+echo "      xrdp : RUNNING"
 
-LISTEN_OK=0
+# --------------------------------------------------
+# Wait for port
+# --------------------------------------------------
+
+echo ""
+echo "Checking TCP 3389..."
+
+PORT_OK=0
 
 for i in {1..10}; do
 
     if ss -lnt 2>/dev/null | grep -q ':3389 '; then
-        LISTEN_OK=1
+        PORT_OK=1
         break
     fi
 
@@ -167,57 +194,75 @@ for i in {1..10}; do
 
 done
 
-if [ "$LISTEN_OK" -ne 1 ]; then
-
-    echo "ERROR: Port 3389 is not listening"
+if [ "$PORT_OK" -ne 1 ]; then
 
     echo ""
-    echo "========== XRDP LOG =========="
+    echo "=============================================="
+    echo "ERROR: PORT 3389 IS NOT LISTENING"
+    echo "=============================================="
+
+    echo ""
+    echo "----- XRDP LOG -----"
     cat /var/log/xrdp.log 2>/dev/null || true
 
     echo ""
-    echo "========== SESMAN LOG =========="
+    echo "----- SESMAN LOG -----"
     cat /var/log/xrdp-sesman.log 2>/dev/null || true
 
     exit 1
 fi
 
-echo "      Port 3389: LISTENING"
+# --------------------------------------------------
+# SUCCESS
+# --------------------------------------------------
 
 echo ""
 echo "=============================================="
 echo "          XRDP SERVER IS READY"
 echo "=============================================="
 echo ""
-echo " Desktop  : XFCE"
-echo " Protocol : RDP"
-echo " Security : TLS"
-echo " Port     : 3389"
-echo " User     : root"
-echo " Password : root"
-echo " Python   : $(python --version 2>&1)"
+echo "Desktop   : XFCE"
+echo "Protocol  : RDP"
+echo "Security  : TLS"
+echo "Port      : 3389"
+echo "Username  : root"
+echo "Password  : root"
+echo "Python    : $(python --version 2>&1)"
+echo ""
+echo "xrdp PID        : $XRDP_PID"
+echo "xrdp-sesman PID : $SESMAN_PID"
+echo ""
+echo "TCP 3389 : LISTENING"
 echo "=============================================="
 echo ""
 echo "Waiting for RDP connections..."
 echo ""
 
 # --------------------------------------------------
-# Keep container alive.
-# XRDP stays in background.
-# If either critical process dies, container exits
-# so Railway can restart it.
+# Keep container alive and monitor both processes
 # --------------------------------------------------
+
 while true; do
 
     if ! kill -0 "$XRDP_PID" 2>/dev/null; then
-        echo "ERROR: xrdp process stopped"
+
+        echo ""
+        echo "ERROR: xrdp process stopped!"
+
         cat /var/log/xrdp.log 2>/dev/null || true
+        cat /var/log/xrdp-console.log 2>/dev/null || true
+
         exit 1
     fi
 
     if ! kill -0 "$SESMAN_PID" 2>/dev/null; then
-        echo "ERROR: xrdp-sesman process stopped"
+
+        echo ""
+        echo "ERROR: xrdp-sesman process stopped!"
+
         cat /var/log/xrdp-sesman.log 2>/dev/null || true
+        cat /var/log/xrdp-sesman-console.log 2>/dev/null || true
+
         exit 1
     fi
 
