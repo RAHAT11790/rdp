@@ -27,8 +27,6 @@ RUN apt-get update && \
         policykit-1 \
         pulseaudio \
         pulseaudio-utils \
-        pulseaudio-module-x11 \
-        pulseaudio-utils \
         wine \
         wine32:i386 \
         firefox-esr \
