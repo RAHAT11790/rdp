@@ -7,14 +7,16 @@ ENV LANG=en_US.UTF-8
 ENV LANGUAGE=en_US:en
 ENV LC_ALL=en_US.UTF-8
 
-# --------------------------------------------------
-# Enable 32-bit architecture for Wine
-# --------------------------------------------------
+# =========================================================
+# 32-bit support for Wine
+# =========================================================
+
 RUN dpkg --add-architecture i386
 
-# --------------------------------------------------
-# System packages
-# --------------------------------------------------
+# =========================================================
+# Install desktop + XRDP + Xorg + DBus + Wine + Firefox
+# =========================================================
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     xrdp \
     xorgxrdp \
@@ -60,57 +62,80 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# --------------------------------------------------
+# =========================================================
 # Locale
-# --------------------------------------------------
-RUN sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen \
+# =========================================================
+
+RUN sed -i \
+    's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' \
+    /etc/locale.gen \
     && locale-gen en_US.UTF-8 \
     && update-locale LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8
 
-# --------------------------------------------------
+# =========================================================
 # Root password
-# --------------------------------------------------
+# =========================================================
+
 RUN echo "root:root" | chpasswd
 
-# --------------------------------------------------
-# X11 runtime directories
-# --------------------------------------------------
-RUN mkdir -p /tmp/.X11-unix \
+# =========================================================
+# Runtime directories
+# =========================================================
+
+RUN mkdir -p \
     /run/dbus \
     /var/run/dbus \
+    /var/run/xrdp \
+    /tmp/.X11-unix \
     /root/.config \
     /root/.cache \
     /root/.local/share \
+    /root/.local/state \
     && chmod 1777 /tmp/.X11-unix
 
-# --------------------------------------------------
-# XRDP user/certificate permissions
-# --------------------------------------------------
+# =========================================================
+# XRDP permissions
+# =========================================================
+
 RUN adduser xrdp ssl-cert || true
 
-# --------------------------------------------------
-# Allow root XRDP login
-# --------------------------------------------------
+# =========================================================
+# Allow root login through XRDP
+# =========================================================
+
 RUN sed -i \
-    's/^AllowRootLogin=.*/AllowRootLogin=true/' \
+    's/^[[:space:]]*AllowRootLogin=.*/AllowRootLogin=true/' \
     /etc/xrdp/sesman.ini
 
-# --------------------------------------------------
-# XRDP configuration
-# TLS is used because it avoids the RDP security/MAC
-# problem encountered previously.
-# --------------------------------------------------
-RUN sed -i \
-    -e 's/^security_layer=.*/security_layer=tls/' \
-    -e 's/^crypt_level=.*/crypt_level=high/' \
-    /etc/xrdp/xrdp.ini \
-    && grep -q '^port=3389' /etc/xrdp/xrdp.ini \
-       || sed -i '/^\[Globals\]/a port=3389' /etc/xrdp/xrdp.ini
+# =========================================================
+# Clean XRDP configuration
+#
+# Remove ALL existing port/security/crypt directives first.
+# This prevents:
+#
+# port=3389
+# port=-1
+# port=-1
+# port=ask3389
+#
+# =========================================================
 
-# --------------------------------------------------
-# Generate self-signed TLS certificate
-# --------------------------------------------------
-RUN rm -f /etc/xrdp/cert.pem /etc/xrdp/key.pem \
+RUN sed -i \
+    -e '/^[[:space:]]*port[[:space:]]*=/d' \
+    -e '/^[[:space:]]*security_layer[[:space:]]*=/d' \
+    -e '/^[[:space:]]*crypt_level[[:space:]]*=/d' \
+    /etc/xrdp/xrdp.ini \
+    && sed -i \
+    '/^\[Globals\]/a port=3389\nsecurity_layer=tls\ncrypt_level=high' \
+    /etc/xrdp/xrdp.ini
+
+# =========================================================
+# Generate XRDP TLS certificate
+# =========================================================
+
+RUN rm -f \
+    /etc/xrdp/cert.pem \
+    /etc/xrdp/key.pem \
     && openssl req \
         -x509 \
         -nodes \
@@ -124,37 +149,35 @@ RUN rm -f /etc/xrdp/cert.pem /etc/xrdp/key.pem \
     && chown root:root /etc/xrdp/cert.pem \
     && chmod 644 /etc/xrdp/cert.pem
 
-# --------------------------------------------------
-# XFCE configuration
-# --------------------------------------------------
-RUN mkdir -p /root/.config/xfce4/xfconf/xfce-perchannel-xml
+# =========================================================
+# Disable XFCE compositor
+#
+# Helps avoid rendering problems in virtual XRDP sessions.
+# =========================================================
 
-# Disable XFCE compositor.
-# This reduces rendering/black-screen problems in
-# virtual/XRDP environments.
-RUN cat > /root/.config/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml <<'EOF'
+RUN mkdir -p \
+    /root/.config/xfce4/xfconf/xfce-perchannel-xml
+
+RUN cat > \
+    /root/.config/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml \
+    <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 
 <channel name="xfwm4" version="1.0">
   <property name="general" type="empty">
     <property name="use_compositing" type="bool" value="false"/>
-    <property name="vblank_mode" type="string" value="auto"/>
-    <property name="show_dock_shadow" type="bool" value="false"/>
-    <property name="show_frame_shadow" type="bool" value="false"/>
   </property>
 </channel>
 EOF
 
-# --------------------------------------------------
+# =========================================================
 # XRDP session startup
-# IMPORTANT:
-# dbus-launch + xfce4-session is used instead of
-# directly starting startxfce4.
-# --------------------------------------------------
+# =========================================================
+
 RUN cat > /etc/xrdp/startwm.sh <<'EOF'
 #!/bin/sh
 
-# Load system environment
+# Load environment
 if [ -r /etc/profile ]; then
     . /etc/profile
 fi
@@ -163,26 +186,30 @@ if [ -r /etc/default/locale ]; then
     . /etc/default/locale
 fi
 
-# Clean desktop-session variables
+# Remove conflicting session variables
 unset DBUS_SESSION_BUS_ADDRESS
 unset WAYLAND_DISPLAY
 unset SESSION_MANAGER
 
-# Force X11 + XFCE
+# XFCE / X11
 export XDG_SESSION_TYPE=x11
 export XDG_CURRENT_DESKTOP=XFCE
 export XDG_SESSION_DESKTOP=xfce
+
 export XDG_CONFIG_DIRS=/etc/xdg/xdg-xfce:/etc/xdg
 export XDG_DATA_DIRS=/usr/share/xfce4:/usr/local/share:/usr/share
 
 export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
 
-# X11 directory
+# Software rendering
+export LIBGL_ALWAYS_SOFTWARE=1
+
+# X11
 mkdir -p /tmp/.X11-unix
 chmod 1777 /tmp/.X11-unix
 
-# Root session files
+# Root X11 authority files
 touch /root/.Xauthority
 touch /root/.ICEauthority
 
@@ -192,20 +219,16 @@ chmod 600 /root/.ICEauthority
 chown root:root /root/.Xauthority
 chown root:root /root/.ICEauthority
 
-# Disable XFCE compositor through environment
-export LIBGL_ALWAYS_SOFTWARE=1
-
 # Start XFCE inside its own DBus session.
-# This is important inside a Docker container where
-# systemd is not PID 1.
 exec dbus-launch --exit-with-session /usr/bin/xfce4-session
 EOF
 
 RUN chmod +x /etc/xrdp/startwm.sh
 
-# --------------------------------------------------
+# =========================================================
 # Root .xsession fallback
-# --------------------------------------------------
+# =========================================================
+
 RUN cat > /root/.xsession <<'EOF'
 #!/bin/sh
 
@@ -216,8 +239,10 @@ unset SESSION_MANAGER
 export XDG_SESSION_TYPE=x11
 export XDG_CURRENT_DESKTOP=XFCE
 export XDG_SESSION_DESKTOP=xfce
+
 export LANG=en_US.UTF-8
 export LC_ALL=en_US.UTF-8
+
 export LIBGL_ALWAYS_SOFTWARE=1
 
 exec dbus-launch --exit-with-session /usr/bin/xfce4-session
@@ -225,15 +250,17 @@ EOF
 
 RUN chmod 700 /root/.xsession
 
-# --------------------------------------------------
-# DBus machine identity
-# --------------------------------------------------
+# =========================================================
+# DBus machine ID
+# =========================================================
+
 RUN dbus-uuidgen --ensure=/etc/machine-id \
     && ln -sf /etc/machine-id /var/lib/dbus/machine-id
 
-# --------------------------------------------------
-# Validate installation during BUILD
-# --------------------------------------------------
+# =========================================================
+# BUILD-TIME VALIDATION
+# =========================================================
+
 RUN test -x /usr/sbin/xrdp \
     && test -x /usr/sbin/xrdp-sesman \
     && test -x /usr/bin/xfce4-session \
@@ -243,15 +270,27 @@ RUN test -x /usr/sbin/xrdp \
     && id xrdp \
     && id xrdp | grep -q ssl-cert
 
-# --------------------------------------------------
-# Railway / XRDP port
-# --------------------------------------------------
+# =========================================================
+# Verify XRDP configuration
+# =========================================================
+
+RUN echo "========== XRDP CONFIG ==========" \
+    && grep -E '^[[:space:]]*(port|security_layer|crypt_level)=' \
+       /etc/xrdp/xrdp.ini \
+    && echo "================================="
+
+# =========================================================
+# Railway TCP Proxy target
+# =========================================================
+
 EXPOSE 3389
 
-# --------------------------------------------------
-# Startup script
-# --------------------------------------------------
+# =========================================================
+# Startup
+# =========================================================
+
 COPY start.sh /start.sh
+
 RUN chmod +x /start.sh
 
 CMD ["/start.sh"]
