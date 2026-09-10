@@ -2,61 +2,87 @@
 
 set -e
 
-echo "=============================================="
-echo "       XFCE + XRDP RAILWAY SERVER"
-echo "=============================================="
+echo "=========================================="
+echo "        Railway Debian XRDP Server"
+echo "=========================================="
 
 echo ""
-echo "[1] Python:"
+echo "Python:"
 python --version
 python3 --version
 python -m pip --version
 
 echo ""
-echo "[2] Checking required programs..."
-
+echo "Checking XRDP:"
 command -v xrdp
 command -v xrdp-sesman
-command -v startxfce4
 
 echo ""
-echo "[3] Preparing DBus..."
+echo "Checking XFCE:"
+command -v startxfce4
+
+# --------------------------------------------------
+# Runtime directories
+# --------------------------------------------------
 
 mkdir -p /run/dbus
+mkdir -p /run/xrdp
+mkdir -p /var/log/xrdp
+
+# --------------------------------------------------
+# D-Bus
+# --------------------------------------------------
 
 dbus-uuidgen --ensure=/etc/machine-id
 
 dbus-daemon --system --fork || true
 
-echo ""
-echo "[4] Preparing PulseAudio..."
+# --------------------------------------------------
+# Runtime user directory
+# --------------------------------------------------
 
 mkdir -p /run/user/0
 chmod 700 /run/user/0
 
 export XDG_RUNTIME_DIR=/run/user/0
 
+# --------------------------------------------------
+# PulseAudio
+# --------------------------------------------------
+
 pulseaudio \
     --system \
     --disallow-exit \
     --disable-shm \
     --exit-idle-time=-1 \
-    2>/dev/null || true
+    >/tmp/pulseaudio.log 2>&1 || true
 
-echo ""
-echo "[5] Starting XRDP session manager..."
-
-mkdir -p /run/xrdp
-mkdir -p /var/log/xrdp
+# --------------------------------------------------
+# XRDP permissions
+# --------------------------------------------------
 
 chown xrdp:xrdp /run/xrdp 2>/dev/null || true
+
+# --------------------------------------------------
+# Start XRDP session manager
+# --------------------------------------------------
+
+echo ""
+echo "Starting xrdp-sesman..."
 
 /usr/sbin/xrdp-sesman &
 
 sleep 2
 
+# --------------------------------------------------
+# Start XRDP in foreground
+# --------------------------------------------------
+
 echo ""
-echo "[6] Starting XRDP on port 3389..."
+echo "=========================================="
+echo " XRDP SERVER STARTING"
+echo " Internal Port: 3389"
+echo "=========================================="
 echo ""
 
 exec /usr/sbin/xrdp --nodaemon
