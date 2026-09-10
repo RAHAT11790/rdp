@@ -1,110 +1,131 @@
-FROM debian:bookworm
+FROM python:3.11-bookworm
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV TZ=UTC
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
 
-# Enable 32-bit architecture for Wine32
+# Enable 32-bit architecture for Wine
 RUN dpkg --add-architecture i386
 
-# Install XFCE + XRDP + Xorg + Wine32 + Firefox
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-        xrdp \
-        xorgxrdp \
-        xfce4 \
-        xfce4-goodies \
-        xorg \
-        dbus-x11 \
-        dbus \
-        sudo \
-        curl \
-        wget \
-        nano \
-        net-tools \
-        iproute2 \
-        procps \
-        psmisc \
-        policykit-1 \
-        pulseaudio \
-        pulseaudio-utils \
-        wine \
-        wine32:i386 \
-        firefox-esr \
-        ca-certificates \
-        locales \
-        tzdata \
-        xauth \
-        x11-xserver-utils && \
-    apt-get clean && \
-    rm -rf /var/lib/apt/lists/*
+# Install XRDP + XFCE + Wine + Firefox + PulseAudio
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    xrdp \
+    xorgxrdp \
+    xfce4 \
+    xfce4-goodies \
+    xorg \
+    dbus \
+    dbus-x11 \
+    sudo \
+    curl \
+    wget \
+    nano \
+    net-tools \
+    iproute2 \
+    procps \
+    psmisc \
+    policykit-1 \
+    pulseaudio \
+    pulseaudio-utils \
+    wine \
+    wine32:i386 \
+    firefox-esr \
+    ca-certificates \
+    locales \
+    tzdata \
+    xauth \
+    x11-xserver-utils \
+    openssl \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
 
-# Generate locale
-RUN sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen && \
-    locale-gen
-
-ENV LANG=en_US.UTF-8
-ENV LANGUAGE=en_US:en
-ENV LC_ALL=en_US.UTF-8
+# Generate UTF-8 locale
+RUN sed -i 's/^# *en_US.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' /etc/locale.gen \
+    && locale-gen
 
 # Root password
 RUN echo "root:root" | chpasswd
 
-# Allow Xorg to work correctly inside the container
-RUN mkdir -p /etc/X11 && \
-    if [ -f /etc/X11/Xwrapper.config ]; then \
-        sed -i 's/^allowed_users=.*/allowed_users=anybody/' /etc/X11/Xwrapper.config; \
-    else \
-        echo "allowed_users=anybody" > /etc/X11/Xwrapper.config; \
-    fi
+# X11 configuration
+RUN mkdir -p /tmp/.X11-unix \
+    && chmod 1777 /tmp/.X11-unix
 
-# Configure XFCE for root RDP session
+# XFCE session for root
+RUN echo "startxfce4" > /root/.xsession \
+    && chmod 700 /root/.xsession
+
+# XRDP startup script
 RUN printf '%s\n' \
     '#!/bin/sh' \
     'unset DBUS_SESSION_BUS_ADDRESS' \
     'unset XDG_RUNTIME_DIR' \
-    'export XDG_CURRENT_DESKTOP=XFCE' \
-    'export XDG_SESSION_DESKTOP=xfce' \
-    'export DESKTOP_SESSION=xfce' \
     'exec startxfce4' \
-    > /root/.xsession && \
-    chmod 755 /root/.xsession
+    > /etc/xrdp/startwm.sh \
+    && chmod +x /etc/xrdp/startwm.sh
 
-# Configure XRDP to start XFCE
-RUN printf '%s\n' \
-    '#!/bin/sh' \
-    'unset DBUS_SESSION_BUS_ADDRESS' \
-    'unset XDG_RUNTIME_DIR' \
-    'export XDG_CURRENT_DESKTOP=XFCE' \
-    'export XDG_SESSION_DESKTOP=xfce' \
-    'export DESKTOP_SESSION=xfce' \
-    'exec startxfce4' \
-    > /etc/xrdp/startwm.sh && \
-    chmod 755 /etc/xrdp/startwm.sh
-
-# XRDP needs access to ssl-cert
+# Allow XRDP user to access TLS private key
 RUN adduser xrdp ssl-cert || true
 
-# Create DBus machine ID
-RUN mkdir -p /var/run/dbus /run/dbus && \
-    rm -f /var/lib/dbus/machine-id && \
-    dbus-uuidgen --ensure=/var/lib/dbus/machine-id
+# ---------------------------------------------------------
+# XRDP CONFIGURATION
+# IMPORTANT:
+# Use TLS instead of legacy RDP security.
+# This fixes:
+# MAC checksum error for non-FIPS PDU
+# ---------------------------------------------------------
 
-# Make sure XRDP listens on TCP 3389
-RUN sed -i 's/^port=.*/port=3389/' /etc/xrdp/xrdp.ini
+RUN awk '\
+BEGIN { inserted=0 } \
+/^\[Globals\]/ { \
+    print; \
+    print "port=3389"; \
+    print "security_layer=tls"; \
+    inserted=1; \
+    next \
+} \
+/^[[:space:]]*port[[:space:]]*=/ { next } \
+/^[[:space:]]*security_layer[[:space:]]*=/ { next } \
+{ print } \
+END { if (!inserted) exit 1 }' \
+/etc/xrdp/xrdp.ini > /tmp/xrdp.ini \
+&& mv /tmp/xrdp.ini /etc/xrdp/xrdp.ini
 
-# Keep standard RDP compatibility
-RUN sed -i 's/^security_layer=.*/security_layer=rdp/' /etc/xrdp/xrdp.ini && \
-    sed -i 's/^crypt_level=.*/crypt_level=high/' /etc/xrdp/xrdp.ini
+# ---------------------------------------------------------
+# Create a dedicated self-signed TLS certificate
+# ---------------------------------------------------------
 
-# Disable Wayland if present
-RUN mkdir -p /etc/gdm3 && \
-    printf '[daemon]\nWaylandEnable=false\n' > /etc/gdm3/custom.conf
+RUN rm -f /etc/xrdp/cert.pem /etc/xrdp/key.pem \
+    && openssl req \
+        -x509 \
+        -nodes \
+        -newkey rsa:2048 \
+        -keyout /etc/xrdp/key.pem \
+        -out /etc/xrdp/cert.pem \
+        -days 3650 \
+        -subj "/C=BD/ST=Dhaka/L=Dhaka/O=RS-ANIME/CN=localhost" \
+    && chown root:ssl-cert /etc/xrdp/key.pem \
+    && chmod 640 /etc/xrdp/key.pem \
+    && chown root:root /etc/xrdp/cert.pem \
+    && chmod 644 /etc/xrdp/cert.pem
+
+# Make sure XRDP can read the TLS key
+RUN id xrdp \
+    && id xrdp | grep -q ssl-cert \
+    && test -s /etc/xrdp/cert.pem \
+    && test -s /etc/xrdp/key.pem
+
+# DBus machine ID
+RUN mkdir -p /var/run/dbus \
+    && dbus-uuidgen --ensure=/etc/machine-id \
+    && ln -sf /etc/machine-id /var/lib/dbus/machine-id
+
+# XRDP port
+EXPOSE 3389
 
 # Startup script
 COPY start.sh /start.sh
-RUN chmod 755 /start.sh
-
-# RDP port
-EXPOSE 3389
+RUN chmod +x /start.sh
 
 CMD ["/start.sh"]
