@@ -2,29 +2,34 @@
 
 set -e
 
-echo "========================================"
-echo " RS ANIME XRDP SERVER"
-echo "========================================"
+echo "=============================================="
+echo "       XFCE + XRDP RAILWAY SERVER"
+echo "=============================================="
 
 echo ""
-echo "[1/6] Python version:"
+echo "[1] Python:"
 python --version
 python3 --version
-pip --version
+python -m pip --version
 
 echo ""
-echo "[2/6] Starting DBus..."
+echo "[2] Checking required programs..."
+
+command -v xrdp
+command -v xrdp-sesman
+command -v startxfce4
+
+echo ""
+echo "[3] Preparing DBus..."
 
 mkdir -p /run/dbus
 
-if [ ! -f /etc/machine-id ]; then
-    dbus-uuidgen --ensure=/etc/machine-id
-fi
+dbus-uuidgen --ensure=/etc/machine-id
 
 dbus-daemon --system --fork || true
 
 echo ""
-echo "[3/6] Preparing PulseAudio..."
+echo "[4] Preparing PulseAudio..."
 
 mkdir -p /run/user/0
 chmod 700 /run/user/0
@@ -39,14 +44,19 @@ pulseaudio \
     2>/dev/null || true
 
 echo ""
-echo "[4/6] Starting XRDP..."
+echo "[5] Starting XRDP session manager..."
 
-mkdir -p /var/run/xrdp
+mkdir -p /run/xrdp
 mkdir -p /var/log/xrdp
 
-chown xrdp:xrdp /var/run/xrdp 2>/dev/null || true
+chown xrdp:xrdp /run/xrdp 2>/dev/null || true
 
 /usr/sbin/xrdp-sesman &
+
 sleep 2
 
-/usr/sbin/xrdp --nodaemon
+echo ""
+echo "[6] Starting XRDP on port 3389..."
+echo ""
+
+exec /usr/sbin/xrdp --nodaemon
